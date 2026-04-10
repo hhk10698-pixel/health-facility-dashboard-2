@@ -1,6 +1,5 @@
 import io
 import json
-import os
 import zipfile
 from pathlib import Path
 from urllib.request import urlopen
@@ -43,6 +42,21 @@ def normalize_state_name(name):
     return STATE_NAME_MAP.get(cleaned, cleaned)
 
 
+def resolve_master_csv_path():
+    preferred = DATA_DIR / "master_health_facilities.csv"
+    if preferred.exists():
+        return preferred
+
+    candidates = sorted(
+        DATA_DIR.glob("master_health_facilities.*"),
+        key=lambda p: p.suffix.lower(),
+    )
+    for candidate in candidates:
+        if candidate.suffix.lower() in [".csv", ".xlsx", ".xls"]:
+            return candidate
+    return None
+
+
 @st.cache_data
 def load_geojson():
     with urlopen(GEOJSON_URL) as response:
@@ -50,10 +64,14 @@ def load_geojson():
 
 
 @st.cache_data
-def load_master_data():
-    if not MASTER_CSV_PATH.exists():
+def load_master_data(path_str, signature):
+    path = Path(path_str)
+    if not path.exists():
         return pd.DataFrame()
-    df = pd.read_csv(MASTER_CSV_PATH)
+    if path.suffix.lower() == ".csv":
+        df = pd.read_csv(path)
+    else:
+        df = pd.read_excel(path)
     if "Name of State/UTs" in df.columns:
         df["Name of State/UTs"] = df["Name of State/UTs"].map(normalize_state_name)
     return df
@@ -110,10 +128,16 @@ def format_breakdown(group):
     return ", ".join([f"{k}: {v}" for k, v in counts.items()])
 
 
-master_df = load_master_data()
+resolved_master_path = resolve_master_csv_path()
+if resolved_master_path and resolved_master_path.exists():
+    file_signature = f"{resolved_master_path.stat().st_mtime_ns}-{resolved_master_path.stat().st_size}"
+    master_df = load_master_data(str(resolved_master_path), file_signature)
+else:
+    master_df = pd.DataFrame()
+
 if master_df.empty:
     st.error(
-        f"Master dataset not found at: {MASTER_CSV_PATH}. Please keep the file in that folder."
+        f"Master dataset not found in: {DATA_DIR}. Expected master_health_facilities.csv (or xlsx/xls)."
     )
     st.stop()
 
@@ -179,9 +203,9 @@ else:
 
 st.download_button(
     label="Download master_health_facilities.csv",
-    data=MASTER_CSV_PATH.read_bytes(),
-    file_name="master_health_facilities.csv",
-    mime="text/csv",
+    data=resolved_master_path.read_bytes(),
+    file_name=resolved_master_path.name,
+    mime="text/csv" if resolved_master_path.suffix.lower() == ".csv" else "application/octet-stream",
 )
 
 type_breakdown_df = (
